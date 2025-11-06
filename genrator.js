@@ -54,7 +54,7 @@ function readJsonFileWithFallback(filename) {
 }
 
 // Erstellen eines Entry aus Qualifying LeaderLine
-function createEntryFromLeaderLine(line, forceRaceNumber, forceCarModel) {
+function createEntryFromLeaderLine(line, gridPosition, forceRaceNumber, forceCarModel) {
   return {
     drivers: line.car.drivers.map((driver) => ({
       playerID: driver.playerId,
@@ -71,7 +71,7 @@ function createEntryFromLeaderLine(line, forceRaceNumber, forceCarModel) {
     customCar: "",
     overrideCarModelForCustomCar: 0,
     isServerAdmin: 0,
-    defaultGridPosition: 0,
+    defaultGridPosition: gridPosition,
     ballastKg: 0,
     restrictor: 0,
     TeamName: line.car.teamName || "",
@@ -85,7 +85,7 @@ async function applyGridStrategy(leaders, strategy) {
       return [...leaders].reverse();
 
     case "customreverse":
-      const response = await prompts({
+      const countResponse = await prompts({
         type: "number",
         name: "reverseCount",
         message: `Wie viele Fahrer sollen reversed werden? (Max: ${leaders.length})`,
@@ -96,11 +96,23 @@ async function applyGridStrategy(leaders, strategy) {
             : `Bitte eine Zahl zwischen 1 und ${leaders.length} eingeben`,
       });
 
-      if (!response.reverseCount) process.exit(0);
+      if (!countResponse.reverseCount) process.exit(0);
 
-      const topN = leaders.slice(0, response.reverseCount).reverse();
-      const rest = leaders.slice(response.reverseCount);
-      return [...topN, ...rest];
+      const { moveToEnd } = await prompts({
+        type: "confirm",
+        name: "moveToEnd",
+        message: "Sollen die reversed Fahrer ans Ende der Liste verschoben werden?",
+        initial: false,
+      });
+
+      const topN = leaders.slice(0, countResponse.reverseCount).reverse();
+      const rest = leaders.slice(countResponse.reverseCount);
+
+      if (moveToEnd) {
+        return [...rest, ...topN];
+      } else {
+        return [...topN, ...rest];
+      }
 
     case "random":
       return [...leaders].sort(() => Math.random() - 0.5);
@@ -119,6 +131,50 @@ function displayDrivers(drivers) {
     console.log(`${idx + 1}. #${driver.car.raceNumber} - ${name}`);
   });
   console.log("");
+}
+
+// Vergleichsanzeige zwischen Qualifying und finalem Grid
+function displayComparison(originalLeaders, finalLeaders) {
+  console.log("\n╔═══════════════════════════════════════════════════════════════════════╗");
+  console.log("║                     QUALIFYING vs RACE GRID                           ║");
+  console.log("╠═══════════════════════════════════════════════════════════════════════╣");
+  console.log("║ Quali Pos │ Fahrer                           │ Grid Pos │ Änderung   ║");
+  console.log("╠═══════════════════════════════════════════════════════════════════════╣");
+
+  // Mapping erstellen für schnellen Zugriff
+  const finalPositions = new Map();
+  finalLeaders.forEach((driver, idx) => {
+    const playerId = driver.car.drivers[0].playerId;
+    finalPositions.set(playerId, idx + 1);
+  });
+
+  originalLeaders.forEach((driver, idx) => {
+    const qualyPos = idx + 1;
+    const playerId = driver.car.drivers[0].playerId;
+    const name = `${driver.car.drivers[0].firstName} ${driver.car.drivers[0].lastName}`;
+    const raceNumber = driver.car.raceNumber;
+    const gridPos = finalPositions.get(playerId);
+    const change = gridPos - qualyPos;
+
+    let changeStr = "";
+    if (change > 0) {
+      changeStr = `↓ ${change}`;
+    } else if (change < 0) {
+      changeStr = `↑ ${Math.abs(change)}`;
+    } else {
+      changeStr = "→ 0";
+    }
+
+    // Formatierung für schöne Ausgabe
+    const qualyPosStr = String(qualyPos).padStart(9);
+    const nameStr = `#${raceNumber} ${name}`.padEnd(32).substring(0, 32);
+    const gridPosStr = String(gridPos).padStart(8);
+    const changeStrPadded = changeStr.padEnd(10);
+
+    console.log(`║ ${qualyPosStr} │ ${nameStr} │ ${gridPosStr} │ ${changeStrPadded} ║`);
+  });
+
+  console.log("╚═══════════════════════════════════════════════════════════════════════╝\n");
 }
 
 // Manuelle Bearbeitung
@@ -205,14 +261,14 @@ async function main() {
   console.log(`✓ Qualifying-Datei gefunden: ${qualyFile}`);
 
   const qualyJson = readJsonFileWithFallback(qualyFile);
-  let leaders = qualyJson.sessionResult?.leaderBoardLines || [];
+  const originalLeaders = qualyJson.sessionResult?.leaderBoardLines || [];
 
-  if (leaders.length === 0) {
+  if (originalLeaders.length === 0) {
     console.error("❌ Keine Fahrer in Quali-Ergebnissen gefunden.");
     process.exit(1);
   }
 
-  console.log(`✓ ${leaders.length} Fahrer gefunden\n`);
+  console.log(`✓ ${originalLeaders.length} Fahrer gefunden\n`);
 
   // Grid-Strategie wählen
   const { strategy } = await prompts({
@@ -229,7 +285,7 @@ async function main() {
 
   if (!strategy) process.exit(0);
 
-  leaders = await applyGridStrategy(leaders, strategy);
+  let leaders = await applyGridStrategy(originalLeaders, strategy);
   console.log(`✓ Strategie angewendet`);
 
   // Manuelle Bearbeitung
@@ -244,8 +300,11 @@ async function main() {
     leaders = await manualEdit(leaders);
   }
 
+  // Vergleich anzeigen
+  displayComparison(originalLeaders, leaders);
+
   // Force-Optionen
-  console.log("\n=== Force-Optionen ===");
+  console.log("=== Force-Optionen ===");
   
   const { forceRaceNumber } = await prompts({
     type: "confirm",
@@ -272,10 +331,10 @@ async function main() {
 
   if (!filename) process.exit(0);
 
-  // Entrylist erstellen und speichern
+  // Entrylist erstellen und speichern mit korrekten Grid-Positionen (1-basiert)
   const newEntryList = {
-    entries: leaders.map((leader) => 
-      createEntryFromLeaderLine(leader, forceRaceNumber, forceCarModel)
+    entries: leaders.map((leader, index) => 
+      createEntryFromLeaderLine(leader, index + 1, forceRaceNumber, forceCarModel)
     ),
     forceEntryList: 0,
   };
@@ -285,6 +344,7 @@ async function main() {
   console.log("\n✓ Entrylist erfolgreich erstellt!");
   console.log(`  - Rennnummern: ${forceRaceNumber ? "Aus Qualifying übernommen" : "Nicht forciert (-1)"}`);
   console.log(`  - Fahrzeugmodelle: ${forceCarModel ? "Aus Qualifying übernommen" : "Nicht forciert (-1)"}`);
+  console.log(`  - Grid-Positionen: 1-${leaders.length} (basierend auf finaler Reihenfolge)`);
 }
 
 main().catch((err) => {
