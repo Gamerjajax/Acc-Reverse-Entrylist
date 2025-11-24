@@ -83,7 +83,7 @@ Zeigt eine übersichtliche Tabelle mit Qualifying vs. Race Grid Positionen inklu
 
 ## Lizenz
 
-Frei verwendbar für private und kommerzielle Zwecke ohne Einschränkungen.
+GPL-3.0 license
 
 ## Support
 
